@@ -1,0 +1,11 @@
+# build artifacts
+/serverlume
+/serverlume.exe
+/dashboard
+/dashboard.exe
+*.exe
+*.test
+
+# OS
+.DS_Store
+Thumbs.db
