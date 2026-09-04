@@ -38,7 +38,8 @@ const remoteProbeCmd = `echo '---CPU---'; awk '/^cpu /{print $2,$3,$4,$5,$6,$7,$
 	`echo '---LOAD---'; cat /proc/loadavg; ` +
 	`echo '---DISK---'; df -P / | awk 'NR==2{print $5}'; ` +
 	`echo '---NET---'; awk 'NR>2 && $1!="lo:"{gsub(":","",$1); rx+=$2; tx+=$10} END{print rx+0, tx+0}' /proc/net/dev; ` +
-	`echo '---UPTIME---'; awk '{print $1}' /proc/uptime`
+	`echo '---UPTIME---'; awk '{print $1}' /proc/uptime; ` +
+	`echo '---OS---'; . /etc/os-release 2>/dev/null; if [ -n "$PRETTY_NAME" ]; then echo "$PRETTY_NAME"; else uname -sr; fi`
 
 const (
 	dialTimeout    = 5 * time.Second
@@ -57,6 +58,7 @@ type hostSample struct {
 	loadAvg        [3]float64
 	procs          int
 	uptime         time.Duration
+	os             string
 }
 
 // rawSample is the previous poll's raw (cumulative) counters, kept per host
@@ -482,6 +484,7 @@ func (p *sshPoller) parseSample(alias string, out []byte) (hostSample, error) {
 	}
 
 	uptimeSec, _ := strconv.ParseFloat(sections["UPTIME"], 64)
+	osName := strings.Trim(strings.TrimSpace(sections["OS"]), `"`)
 
 	now := time.Now()
 	p.mu.Lock()
@@ -493,6 +496,7 @@ func (p *sshPoller) parseSample(alias string, out []byte) (hostSample, error) {
 		mem: memPct, disk: diskPct,
 		loadAvg: loadAvg, procs: procs,
 		uptime: time.Duration(uptimeSec * float64(time.Second)),
+		os:     osName,
 	}
 	// Guard every delta against the counter having gone backwards (a reboot,
 	// or a NIC/counter reset) — an underflowing uint64 subtraction would

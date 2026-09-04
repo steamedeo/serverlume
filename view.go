@@ -391,9 +391,10 @@ func (m model) renderOverview(s server, width, height int) string {
 	}
 	b.WriteString("\n\n")
 
-	labelW := 13
-	b.WriteString(kv("Region", s.region, labelW) + "\n")
+	labelW := 18
+	b.WriteString(kv("User", s.user, labelW) + "\n")
 	b.WriteString(kv("IP Address", s.ip, labelW) + "\n")
+	b.WriteString(kv("Operating System", s.os, labelW) + "\n")
 	b.WriteString(kv("Uptime", fmtDuration(s.uptime), labelW) + "\n")
 	b.WriteString(kv("Processes", fmt.Sprintf("%d", s.procs), labelW) + "\n")
 	b.WriteString(kv("Load Avg", fmt.Sprintf("%.2f  %.2f  %.2f", s.loadAvg[0], s.loadAvg[1], s.loadAvg[2]), labelW) + "\n\n")

@@ -27,8 +27,9 @@ var lastNetSample netSample
 func newHostEntry() server {
 	s := server{
 		name:   "this-host",
-		region: runtime.GOOS,
+		user:   currentUsername(),
 		ip:     "127.0.0.1",
+		os:     runtime.GOOS,
 		status: "up",
 		isHost: true,
 	}
@@ -36,7 +37,7 @@ func newHostEntry() server {
 		if hi.Hostname != "" {
 			s.name = hi.Hostname
 		}
-		s.region = hi.Platform + " " + hi.PlatformVersion
+		s.os = hi.Platform + " " + hi.PlatformVersion
 	}
 	s.refreshHost()
 	for i := 0; i < 40; i++ {

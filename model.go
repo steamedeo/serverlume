@@ -14,8 +14,9 @@ import (
 
 type server struct {
 	name     string
-	region   string
+	user     string
 	ip       string
+	os       string
 	status   string
 	cpu      float64
 	mem      float64
@@ -91,21 +92,21 @@ func newServers() ([]server, string) {
 // demoFleet is the fallback fleet shown when no SSH hosts are configured, so
 // the dashboard still has something to display out of the box.
 func demoFleet() []server {
-	names := []struct{ name, region, ip, status string }{
-		{"web-01", "us-east-1", "10.0.1.11", "up"},
-		{"web-02", "us-east-1", "10.0.1.12", "up"},
-		{"api-01", "us-east-1", "10.0.2.10", "warn"},
-		{"api-02", "us-west-2", "10.0.2.11", "up"},
-		{"db-primary", "us-east-1", "10.0.3.5", "up"},
-		{"db-replica", "us-west-2", "10.0.3.6", "up"},
-		{"cache-01", "us-east-1", "10.0.4.2", "up"},
-		{"worker-01", "eu-west-1", "10.0.5.20", "down"},
-		{"worker-02", "eu-west-1", "10.0.5.21", "up"},
-		{"lb-edge", "global", "10.0.0.1", "up"},
+	names := []struct{ name, user, ip, os, status string }{
+		{"web-01", "deploy", "10.0.1.11", "Ubuntu 22.04", "up"},
+		{"web-02", "deploy", "10.0.1.12", "Ubuntu 22.04", "up"},
+		{"api-01", "deploy", "10.0.2.10", "Debian 12", "warn"},
+		{"api-02", "deploy", "10.0.2.11", "Debian 12", "up"},
+		{"db-primary", "postgres", "10.0.3.5", "Ubuntu 22.04", "up"},
+		{"db-replica", "postgres", "10.0.3.6", "Ubuntu 22.04", "up"},
+		{"cache-01", "redis", "10.0.4.2", "Alpine 3.19", "up"},
+		{"worker-01", "worker", "10.0.5.20", "Debian 12", "down"},
+		{"worker-02", "worker", "10.0.5.21", "Debian 12", "up"},
+		{"lb-edge", "root", "10.0.0.1", "Alpine 3.19", "up"},
 	}
 	srv := make([]server, 0, len(names))
 	for _, n := range names {
-		s := server{name: n.name, region: n.region, ip: n.ip, status: n.status}
+		s := server{name: n.name, user: n.user, ip: n.ip, os: n.os, status: n.status}
 		seedPlaceholderMetrics(&s)
 		srv = append(srv, s)
 	}
@@ -118,17 +119,12 @@ func demoFleet() []server {
 // within the first few seconds. Status starts "warn" (unverified) rather
 // than "up", since we haven't actually reached the host yet.
 func seedSSHServer(h sshHost) server {
-	region := "ssh"
-	if h.User != "" {
-		region = h.User + "@" + h.HostName
-	} else {
-		region = h.HostName
-	}
-	if h.Port != "" && h.Port != "22" {
-		region += ":" + h.Port
+	user := h.User
+	if user == "" {
+		user = currentUsername()
 	}
 	s := server{
-		name: h.Alias, region: region, ip: h.HostName, status: "warn",
+		name: h.Alias, user: user, ip: h.HostName, status: "warn",
 		isSSH: true, sshUser: h.User, sshPort: h.Port, sshIdentityFiles: h.IdentityFile,
 	}
 	seedPlaceholderMetrics(&s)
@@ -498,6 +494,9 @@ func (m *model) applySSHSample(msg sshSampleMsg) {
 		s.loadAvg = smp.loadAvg
 		s.procs = smp.procs
 		s.uptime = smp.uptime
+		if smp.os != "" {
+			s.os = smp.os
+		}
 		s.cpuHist = append(s.cpuHist[1:], s.cpu)
 		s.memHist = append(s.memHist[1:], s.mem)
 		s.diskHist = append(s.diskHist[1:], s.disk)
