@@ -1,68 +1,57 @@
-# serverlume
+# ✦ serverlume
 
-A [k9s](https://k9scli.io/)-style terminal dashboard for keeping an eye on a fleet of
-servers — live CPU/memory/network metrics with history charts, and a
-scrolling log tail, all rendered with smooth true-color gradients. Built with
-[Bubble Tea](https://github.com/charmbracelet/bubbletea) and
-[Lip Gloss](https://github.com/charmbracelet/lipgloss).
+**A [k9s](https://k9scli.io/)-style terminal dashboard for your SSH fleet** — point it
+at `~/.ssh/config` and it discovers your hosts, connects, and shows real
+CPU/memory/disk/network numbers pulled straight from `/proc`, agentlessly.
+No daemon to install, no port to open, nothing on the target beyond a shell
+it already has.
 
-```
- ✦ SERVERLUME  server fleet dashboard        7 up  2 warn  1 down     Mon 14:02:11
-───────────────────────────────────────────────────────────────────────────────────
-╭ SERVERS  10 nodes ─────────╮ ╭ Overview  Command  Logs ─────────────────────────╮
-│ ▏ web-01           62%     │ │ web-01                                  UP       │
-│ ▏ web-02           12%     │ │                                                  │
-│ ▏ api-01           88%     │ │ Region        us-east-1                         │
-│ ▏ api-02            9%     │ │ IP Address    10.0.1.11                         │
-│ ▏ db-primary       41%     │ │ Uptime        12d 4h 30m                        │
-│ ▏ db-replica       28%     │ │ Processes     138                               │
-│ ▏ cache-01          8%     │ │ Load Avg      0.82  0.71  0.65                  │
-│ ▏ worker-01        --      │ │                                                  │
-│ ▏ worker-02        28%     │ │ CPU           ████████████░░░░░░░░  62.0%       │
-│ ▏ lb-edge          58%     │ │ Memory        ██████░░░░░░░░░░░░░░  34.1%       │
-│                             │ │                                                  │
-│ ╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌ │ │ CPU history      now 62.0%                     │
-│ ⌂ THIS HOST                 │ │  100 ┤          ╭╮                             │
-│ ⌂ my-laptop         31%     │ │   80 ┤╭╮   ╭╮  ╭╯╰╮   ╭╮                       │
-╰─────────────────────────────╯ ╰──────────────────────────────────────────────────╯
- ↑/↓ select   tab switch view   1-3 jump tab   p pause   q quit
-```
+[![Go Report Card](https://goreportcard.com/badge/github.com/steamedeo/serverlume)](https://goreportcard.com/report/github.com/steamedeo/serverlume)
+[![CI](https://img.shields.io/github/actions/workflow/status/steamedeo/serverlume/ci.yml?branch=main&label=CI)](https://github.com/steamedeo/serverlume/actions)
+[![Go Reference](https://pkg.go.dev/badge/github.com/steamedeo/serverlume.svg)](https://pkg.go.dev/github.com/steamedeo/serverlume)
+[![Go version](https://img.shields.io/github/go-mod/go-version/steamedeo/serverlume)](./go.mod)
+[![Release](https://img.shields.io/github/v/tag/steamedeo/serverlume?label=release&sort=semver)](https://github.com/steamedeo/serverlume/tags)
+[![License: MIT](https://img.shields.io/github/license/steamedeo/serverlume)](./LICENSE)
 
-> This started as an exploration of how far a terminal UI can go toward
-> looking like a modern web dashboard, all in true-color ANSI. See
+> serverlume started as an exploration of how far a terminal UI can go
+> toward looking like a modern web dashboard, all in true-color ANSI, and
+> grew into an actually-useful agentless fleet monitor. See
 > [Bringing your own data](#bringing-your-own-data) for exactly what's real
-> vs. simulated today.
+> vs. simulated today — short version: the server list, the metrics, and the
+> logs are all real for Linux hosts.
+
+## Why
+
+Most fleet dashboards mean installing something — an agent, an exporter, a
+sidecar. serverlume doesn't. If you can already run `ssh myhost`, serverlume
+can already monitor it: it reads your existing `~/.ssh/config`, connects
+with your existing keys, and reads `/proc` the same way any shell on the box
+already can. Same trust boundary as your terminal, same access you already
+have — just visualized.
 
 ## Features
 
-- **Server list populated from `~/.ssh/config`, with live metrics polled
-  over SSH** — serverlume reads the local OpenSSH client config, lists every
-  concrete `Host` alias it defines, and (Linux hosts only, for now) connects
-  to each one to read real CPU/memory/disk/network/load numbers straight
-  from `/proc`, agentlessly — no daemon, no port, nothing installed on the
-  target beyond a standard shell. Falls back to a small demo fleet if no
-  config file is found (or it defines no hosts). See
-  [Bringing your own data](#bringing-your-own-data) for how this works and
-  its current limits.
-- **This host** — a divider-separated entry below the fleet list that monitors
-  the actual machine serverlume is running on (real CPU/memory/disk/network,
-  via [gopsutil](https://github.com/shirou/gopsutil)), kept visually and
-  functionally separate from the fleet
-- **Overview tab** — region, IP, uptime, load average, gradient gauge bars for
-  CPU/memory/disk, network throughput, and real CPU/memory/disk history line
-  charts (via [asciigraph](https://github.com/guptarohit/asciigraph)) with
-  axes and gridlines
-- **Command tab** — run one-off commands on a host over the same persistent
-  SSH connection the poller uses (Linux hosts only, same as metrics), with
-  real stdout/stderr shown per host, scrollback kept per host as you switch
-  between them. One-shot exec, not an interactive shell — no `vim`, `top`,
-  or state (`cd`, env vars) carried between commands, since each run is its
-  own SSH session
-- **Logs tab** — a real, color-coded event feed: every SSH connect,
-  disconnect, poll run, and error, as they actually happen (nothing
-  simulated) — see [Bringing your own data](#bringing-your-own-data)
+- **Fleet discovery from `~/.ssh/config`** — every concrete `Host` alias
+  becomes a monitored server, no separate inventory file to maintain. No
+  config found? Falls back to a small demo fleet so there's always something
+  to look at.
+- **Live metrics over SSH, agentlessly** (Linux hosts, for now) — real
+  CPU/memory/disk/network/load numbers via a single `/proc` read per poll,
+  the same technique Ansible uses for fact-gathering. Persistent per-host
+  connections, reused across polls rather than reconnected every time.
+- **This host** — your own machine gets a divider-separated entry with real
+  local metrics (via [gopsutil](https://github.com/shirou/gopsutil)), kept
+  visually and functionally apart from the fleet you're SSHing into.
+- **Overview tab** — region, IP, uptime, load average, gradient gauges for
+  CPU/memory/disk, network throughput, and auto-scaled history line charts
+  so a metric that only wobbles a couple of points still reads as motion,
+  not a flat line.
+- **Command tab** — run one-off commands on a host over the same live SSH
+  connection, real stdout/stderr, independent input and scrollback per host.
+- **Logs tab** — a real event feed: every SSH connect, disconnect, poll, and
+  error, as they actually happen. Nothing simulated.
 - Smooth true-color (24-bit) gradients throughout, computed in LUV color
-  space via [go-colorful](https://github.com/lucasb-eyer/go-colorful)
+  space for a look that doesn't feel like a typical 16-color terminal app.
 
 ## Install
 
@@ -85,15 +74,22 @@ go build -o serverlume .
 
 ## Usage
 
-| Key       | Action                |
-| --------- | ---------------------- |
-| `↑` / `k` | Select previous server |
-| `↓` / `j` | Select next server      |
-| `Tab`     | Next detail tab         |
-| `Shift+Tab` | Previous detail tab   |
-| `1` – `3` | Jump to a specific tab (Overview / Command / Logs) |
-| `p`       | Pause / resume live updates |
-| `q` / `Ctrl+C` | Quit               |
+Just run `serverlume` — it reads `~/.ssh/config` on startup, no flags
+needed.
+
+| Key             | Action                                              |
+| --------------- | ---------------------------------------------------- |
+| `↑` / `k`       | Select previous server                                |
+| `↓` / `j`       | Select next server                                     |
+| `Tab`           | Next detail tab                                        |
+| `Shift+Tab`     | Previous detail tab                                    |
+| `1` – `3`       | Jump to a specific tab (Overview / Command / Logs)     |
+| `p`             | Pause / resume live updates                            |
+| `q` / `Ctrl+C`  | Quit                                                    |
+
+On the Command tab, typing goes straight into that host's command line —
+press `Enter` to run it, `Backspace` to edit. Arrow-key server navigation
+and tab-switching still work normally while typing.
 
 ## Bringing your own data
 
@@ -136,6 +132,9 @@ Current limits worth knowing about:
 - A poll that fails (unreachable host, auth failure, timeout) marks the
   server `down` and leaves its last-known numbers in place rather than
   blanking them.
+- The **Command tab** is one-shot exec, not an interactive shell — no
+  `vim`, `top`, or state (`cd`, env vars) carried between commands, since
+  each run is its own SSH session.
 
 [`host.go`](./host.go) still shows the pattern for "This host": it reads live
 data for the local machine via [gopsutil](https://github.com/shirou/gopsutil)
@@ -154,8 +153,8 @@ struct and the rest of the UI don't need to change for either data source.
 
 ## Contributing
 
-Issues and pull requests are welcome. Please run `gofmt` and `go vet ./...`
-before submitting.
+Issues and pull requests are welcome. Please run `gofmt`, `go vet ./...`,
+and `go test ./...` before submitting — CI runs the same checks.
 
 ## License
 
