@@ -21,6 +21,10 @@ func (m model) View() string {
 
 	page := lipgloss.NewStyle().Background(lipgloss.Color(hexBgPage))
 
+	if m.booting {
+		return page.Width(m.width).Height(m.height).Render(m.renderSplash())
+	}
+
 	header := m.renderHeader()
 	footer := m.renderFooter()
 
@@ -45,6 +49,41 @@ func (m model) View() string {
 	return page.Width(m.width).Height(m.height).Render(full)
 }
 
+// renderSplash draws the animated boot screen shown for the first
+// bootFrames ticks (or until any key is pressed).
+func (m model) renderSplash() string {
+	wordmark := gradientText("S E R V E R L U M E", hexLav, hexPink, true)
+	tagline := subtleStyle.Render("terminal fleet dashboard")
+
+	pct := float64(m.bootFrame) / float64(bootFrames-1) * 100
+	if pct > 100 {
+		pct = 100
+	}
+	bar := gradientBar(pct, 30, hexLav, hexPink)
+
+	spin := spinnerFrames[m.bootFrame%len(spinnerFrames)]
+	status := subtleStyle.Render(spin + " booting fleet telemetry...")
+	if pct >= 100 {
+		status = lipgloss.NewStyle().Foreground(colGreen).Render("✓ ready — press any key")
+	}
+
+	version := lipgloss.NewStyle().Foreground(colBorder).Render("serverlume " + appVersion)
+
+	block := lipgloss.JoinVertical(lipgloss.Center,
+		wordmark,
+		"",
+		tagline,
+		"",
+		bar,
+		"",
+		status,
+		"",
+		version,
+	)
+	return lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Center, block,
+		lipgloss.WithWhitespaceBackground(lipgloss.Color(hexBgPage)))
+}
+
 func (m model) renderHeader() string {
 	up, warn, down := 0, 0, 0
 	for _, s := range m.servers {
@@ -67,12 +106,19 @@ func (m model) renderHeader() string {
 
 	clock := subtleStyle.Render(time.Now().Format("Mon 15:04:05"))
 	pauseTag := ""
+	live := ""
 	if m.paused {
 		pauseTag = "  " + pill("PAUSED", colAmber, lipgloss.Color(hexBgPage), true)
+	} else {
+		dotStyle := lipgloss.NewStyle().Foreground(colGreen)
+		if !m.pulseOn {
+			dotStyle = lipgloss.NewStyle().Foreground(colDim)
+		}
+		live = "  " + dotStyle.Render("●") + subtleStyle.Render(" live")
 	}
 
 	left := brand + sub
-	right := lipgloss.JoinHorizontal(lipgloss.Center, stats, pauseTag, "   ", clock)
+	right := lipgloss.JoinHorizontal(lipgloss.Center, stats, pauseTag, live, "   ", clock)
 
 	gapW := m.width - lipgloss.Width(left) - lipgloss.Width(right)
 	if gapW < 1 {
@@ -98,7 +144,14 @@ func (m model) renderFooter() string {
 			lipgloss.NewStyle().Foreground(colDim).Render(" "+kd.d)
 		parts = append(parts, chip.Render(txt))
 	}
-	return lipgloss.JoinHorizontal(lipgloss.Center, parts...)
+	left := lipgloss.JoinHorizontal(lipgloss.Center, parts...)
+	right := lipgloss.NewStyle().Foreground(colBorder).Render("serverlume " + appVersion)
+
+	gapW := m.width - lipgloss.Width(left) - lipgloss.Width(right)
+	if gapW < 1 {
+		gapW = 1
+	}
+	return left + strings.Repeat(" ", gapW) + right
 }
 
 func (m model) renderSidebar(width, height int) string {
@@ -106,13 +159,18 @@ func (m model) renderSidebar(width, height int) string {
 	header := lipgloss.NewStyle().Bold(true).Foreground(colPink).Render("SERVERS") +
 		subtleStyle.Render(fmt.Sprintf("  %d nodes", len(m.servers)))
 	rows = append(rows, header)
+	rows = append(rows, subtleStyle.Render("· "+m.fleetSource))
 	rows = append(rows, lipgloss.NewStyle().Foreground(colBorder).Render(strings.Repeat("─", width-2)))
 
 	innerW := width - 4 // minus card border+padding
-	for i, s := range m.servers {
-		selected := i == m.cursor
+
+	renderRow := func(s server, selected, isHostRow bool) string {
 		bar := "▏"
 		barStyle := lipgloss.NewStyle().Foreground(statusColor(s.status))
+		if isHostRow {
+			bar = "⌂"
+			barStyle = lipgloss.NewStyle().Foreground(colLav)
+		}
 
 		nameW := innerW - 9
 		if nameW < 4 {
@@ -123,10 +181,20 @@ func (m model) renderSidebar(width, height int) string {
 			name = name[:nameW]
 		}
 		nameStyle := lipgloss.NewStyle().Foreground(colText)
+		if isHostRow {
+			nameStyle = nameStyle.Foreground(colLav)
+		}
 		cpuStyle := lipgloss.NewStyle().Foreground(colDim)
 		if selected {
-			nameStyle = nameStyle.Foreground(colPink).Bold(true)
+			accent := colPink
+			if isHostRow {
+				accent = colLav
+			}
+			nameStyle = nameStyle.Foreground(accent).Bold(true)
 			cpuStyle = lipgloss.NewStyle().Foreground(colPinkSoft).Bold(true)
+			if isHostRow {
+				cpuStyle = lipgloss.NewStyle().Foreground(accent).Bold(true)
+			}
 			barStyle = barStyle.Bold(true)
 		}
 		cpuTxt := "  --  "
@@ -137,10 +205,22 @@ func (m model) renderSidebar(width, height int) string {
 
 		rowStyle := lipgloss.NewStyle().Width(innerW)
 		if selected {
-			rowStyle = rowStyle.Background(colBgCardHi)
+			bg := colBgCardHi
+			rowStyle = rowStyle.Background(bg)
 		}
-		rows = append(rows, rowStyle.Render(line))
+		return rowStyle.Render(line)
 	}
+
+	for i, s := range m.servers {
+		rows = append(rows, renderRow(s, i == m.cursor, false))
+	}
+
+	// The host entry is visually detached from the fleet: a dashed divider
+	// and a caption make clear it's this machine, not another managed node.
+	rows = append(rows, "")
+	rows = append(rows, lipgloss.NewStyle().Foreground(colBorder).Render(strings.Repeat("╌", innerW)))
+	rows = append(rows, lipgloss.NewStyle().Foreground(colLav).Bold(true).Render("⌂ THIS HOST"))
+	rows = append(rows, renderRow(m.host, m.cursor == len(m.servers), true))
 
 	content := padOpaque(strings.Join(rows, "\n"), innerW, colBgCard)
 	return cardStyleFocus.Width(width - 2).Height(height - 2).Render(content)
@@ -150,7 +230,7 @@ func (m model) renderMain(width, height int) string {
 	if len(m.servers) == 0 {
 		return cardStyle.Width(width - 2).Height(height - 2).Render("no servers")
 	}
-	s := m.servers[m.cursor]
+	s := m.selected()
 
 	var tabsRendered []string
 	for i, name := range tabNames {
@@ -173,12 +253,8 @@ func (m model) renderMain(width, height int) string {
 	switch m.tab {
 	case tabOverview:
 		content = m.renderOverview(s, innerW, innerHeight)
-	case tabMetrics:
-		content = m.renderMetrics(s, innerW, innerHeight)
 	case tabLogs:
 		content = m.renderLogs(innerW, innerHeight)
-	case tabCharts:
-		content = m.renderCharts(innerW, innerHeight)
 	}
 
 	body := lipgloss.JoinVertical(lipgloss.Left,
@@ -200,6 +276,9 @@ func (m model) renderOverview(s server, width, height int) string {
 	var b strings.Builder
 	b.WriteString(lipgloss.NewStyle().Bold(true).Foreground(colText).Render(s.name))
 	b.WriteString("  " + statusPill(s.status))
+	if s.isHost {
+		b.WriteString("  " + pill("⌂ LOCAL HOST", colLav, lipgloss.Color(hexBgPage), true))
+	}
 	b.WriteString("\n\n")
 
 	labelW := 13
@@ -223,19 +302,84 @@ func (m model) renderOverview(s server, width, height int) string {
 	b.WriteString(gauge("Disk", s.disk) + "\n\n")
 
 	b.WriteString(kv("Net In", fmt.Sprintf("%.1f Mb/s", s.netIn), labelW) + "\n")
-	b.WriteString(kv("Net Out", fmt.Sprintf("%.1f Mb/s", s.netOut), labelW) + "\n")
+	b.WriteString(kv("Net Out", fmt.Sprintf("%.1f Mb/s", s.netOut), labelW) + "\n\n")
+
+	chartW := width - 10
+	if chartW < 12 {
+		chartW = 12
+	}
+	chartH := 4
+	if height < 30 {
+		chartH = 3
+	}
+	if height < 22 {
+		chartH = 2
+	}
+
+	section := func(label string, val float64, hist []float64, unit string, col asciigraph.AnsiColor) {
+		lo, hi := autoRange(hist)
+		b.WriteString(lipgloss.NewStyle().Foreground(colLav).Bold(true).Render(label))
+		b.WriteString(subtleStyle.Render(fmt.Sprintf("   now %.1f%s", val, unit)))
+		b.WriteString("\n")
+		b.WriteString(lineChart(hist, chartW, chartH, lo, hi, col))
+		b.WriteString("\n\n")
+	}
+
+	section("CPU history", s.cpu, s.cpuHist, "%", ansiCPU)
+	section("Memory history", s.mem, s.memHist, "%", ansiMem)
+	section("Disk history", s.disk, s.diskHist, "%", ansiDisk)
 
 	return b.String()
 }
 
-// ---------- Metrics tab ----------
+// ---------- history line charts, used by the Overview tab ----------
 
 const (
 	ansiAxis  = asciigraph.AnsiColor(60)  // dim slate, matches hexBorder
 	ansiLabel = asciigraph.AnsiColor(103) // muted lavender-gray, matches hexDim
 	ansiCPU   = asciigraph.AnsiColor(183) // pale lavender-pink
 	ansiMem   = asciigraph.AnsiColor(205) // hot pink
+	ansiDisk  = asciigraph.AnsiColor(215) // warm amber, matches the disk gauge's hot-usage color
 )
+
+// autoRange picks y-axis bounds from a history's actual min/max, padded a
+// bit, instead of a fixed 0-100. A percentage that only ever wobbles in a
+// narrow band (disk usage drifting a couple points, say) is otherwise
+// invisible squashed against a 0-100 scale — real dashboards auto-scale the
+// axis to the data for exactly this reason. Bounds are clamped back to
+// [0, 100] since these are all percentages, and widened to a minimum span
+// so a genuinely flat series still renders as a flat line, not a divide
+// with itself.
+func autoRange(hist []float64) (lo, hi float64) {
+	if len(hist) == 0 {
+		return 0, 100
+	}
+	lo, hi = hist[0], hist[0]
+	for _, v := range hist[1:] {
+		if v < lo {
+			lo = v
+		}
+		if v > hi {
+			hi = v
+		}
+	}
+	const minSpan = 8.0
+	if hi-lo < minSpan {
+		mid := (lo + hi) / 2
+		lo, hi = mid-minSpan/2, mid+minSpan/2
+	} else {
+		pad := (hi - lo) * 0.15
+		lo -= pad
+		hi += pad
+	}
+	if lo < 0 {
+		lo = 0
+	}
+	if hi > 100 {
+		hi = 100
+	}
+	return lo, hi
+}
 
 // lineChart renders one solid-color series. A single color per line (rather than
 // per-point gradient coloring) keeps the emitted ANSI simple, which matters here:
@@ -252,31 +396,6 @@ func lineChart(hist []float64, width, height int, lo, hi float64, col asciigraph
 		asciigraph.LabelColor(ansiLabel),
 		asciigraph.Precision(0),
 	)
-}
-
-func (m model) renderMetrics(s server, width, height int) string {
-	var b strings.Builder
-	chartW := width - 10
-	if chartW < 12 {
-		chartW = 12
-	}
-	chartH := 5
-	if height < 18 {
-		chartH = 3
-	}
-
-	section := func(label string, val float64, hist []float64, lo, hi float64, unit string, col asciigraph.AnsiColor) {
-		b.WriteString(lipgloss.NewStyle().Foreground(colLav).Bold(true).Render(label))
-		b.WriteString(subtleStyle.Render(fmt.Sprintf("   now %.1f%s", val, unit)))
-		b.WriteString("\n")
-		b.WriteString(lineChart(hist, chartW, chartH, lo, hi, col))
-		b.WriteString("\n\n")
-	}
-
-	section("CPU history", s.cpu, s.cpuHist, 0, 100, "%", ansiCPU)
-	section("Memory history", s.mem, s.memHist, 0, 100, "%", ansiMem)
-
-	return b.String()
 }
 
 // ---------- Logs tab ----------

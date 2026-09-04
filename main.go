@@ -17,3 +17,5 @@ func main() {
 		os.Exit(1)
 	}
 }
+
+const appVersion = "v0.1.0"

@@ -30,3 +30,6 @@ jobs:
 
       - name: build
         run: go build ./...
+
+      - name: test
+        run: go test ./...

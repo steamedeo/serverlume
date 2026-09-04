@@ -13,21 +13,23 @@ import (
 // ---------- data ----------
 
 type server struct {
-	name    string
-	region  string
-	ip      string
-	status  string
-	cpu     float64
-	mem     float64
-	disk    float64
-	netIn   float64
-	netOut  float64
-	uptime  time.Duration
-	cpuHist []float64
-	memHist []float64
-	netHist []float64
-	loadAvg [3]float64
-	procs   int
+	name     string
+	region   string
+	ip       string
+	status   string
+	cpu      float64
+	mem      float64
+	disk     float64
+	netIn    float64
+	netOut   float64
+	uptime   time.Duration
+	cpuHist  []float64
+	memHist  []float64
+	diskHist []float64
+	netHist  []float64
+	loadAvg  [3]float64
+	procs    int
+	isHost   bool // true for the single "this machine" sidebar entry, never part of the demo fleet
 }
 
 var logLevels = []struct {
@@ -40,19 +42,32 @@ var logLevels = []struct {
 	{"OK", colGreen},
 }
 
-var logMsgs = []string{
-	"health check passed",
-	"connection accepted from 10.0.4.%d",
-	"gc cycle completed in %dms",
-	"disk usage at %d%%",
-	"deploy hook triggered",
-	"cache invalidated for shard-%d",
-	"systemd unit restarted",
-	"tls certificate renewed",
-	"request latency spike detected",
-	"memory pressure easing",
-	"cron job finished successfully",
-	"replication lag %dms",
+// logTemplate is one kind of simulated log line. levels restricts which
+// severities the message can plausibly appear under (so a routine "gc cycle
+// completed" never shows up tagged ERROR), and argLo/argHi bounds the number
+// substituted into a "%d"-style template to a range that makes sense for
+// what it represents (a disk percentage tops out at 100, not 999).
+type logTemplate struct {
+	tmpl         string
+	levels       []string
+	argLo, argHi int
+}
+
+var logTemplates = []logTemplate{
+	{"health check passed", []string{"OK"}, 0, 0},
+	{"connection accepted from 10.0.4.%d", []string{"INFO"}, 2, 254},
+	{"gc cycle completed in %dms", []string{"OK", "INFO"}, 20, 600},
+	{"disk usage at %d%%", []string{"WARN"}, 70, 96},
+	{"deploy hook triggered", []string{"INFO"}, 0, 0},
+	{"cache invalidated for shard-%d", []string{"INFO"}, 0, 15},
+	{"systemd unit restarted", []string{"WARN", "INFO"}, 0, 0},
+	{"tls certificate renewed", []string{"OK"}, 0, 0},
+	{"request latency spike detected", []string{"WARN", "ERROR"}, 0, 0},
+	{"memory pressure easing", []string{"OK"}, 0, 0},
+	{"cron job finished successfully", []string{"OK"}, 0, 0},
+	{"replication lag %dms", []string{"WARN"}, 50, 900},
+	{"connection refused, retrying", []string{"ERROR"}, 0, 0},
+	{"out of memory: worker process killed", []string{"ERROR"}, 0, 0},
 }
 
 type logLine struct {
@@ -62,10 +77,31 @@ type logLine struct {
 	msg string
 }
 
-// newServers seeds a demo fleet with plausible, slightly-randomized starting
-// metrics. Swap this out for a real inventory/exporter source to point
-// serverlume at actual infrastructure.
-func newServers() []server {
+func logLevelColor(tag string) lipgloss.Color {
+	for _, l := range logLevels {
+		if l.tag == tag {
+			return l.col
+		}
+	}
+	return colDim
+}
+
+// newServers builds the fleet list from the local SSH client config
+// (~/.ssh/config), falling back to a small hardcoded demo fleet when no
+// config file exists or it defines no concrete hosts (e.g. a fresh machine
+// with nothing set up yet). Either way, per-server metrics are currently
+// simulated placeholders — see seedPlaceholderMetrics — pending a follow-up
+// that polls each host live over SSH.
+func newServers() ([]server, string) {
+	if srv := discoverSSHFleet(); len(srv) > 0 {
+		return srv, "~/.ssh/config"
+	}
+	return demoFleet(), "demo data"
+}
+
+// demoFleet is the fallback fleet shown when no SSH hosts are configured, so
+// the dashboard still has something to display out of the box.
+func demoFleet() []server {
 	names := []struct{ name, region, ip, status string }{
 		{"web-01", "us-east-1", "10.0.1.11", "up"},
 		{"web-02", "us-east-1", "10.0.1.12", "up"},
@@ -80,28 +116,54 @@ func newServers() []server {
 	}
 	srv := make([]server, 0, len(names))
 	for _, n := range names {
-		s := server{
-			name: n.name, region: n.region, ip: n.ip, status: n.status,
-			cpu:     rand.Float64()*60 + 10,
-			mem:     rand.Float64()*50 + 20,
-			disk:    rand.Float64()*40 + 30,
-			netIn:   rand.Float64() * 80,
-			netOut:  rand.Float64() * 40,
-			uptime:  time.Duration(rand.Intn(90)) * 24 * time.Hour,
-			loadAvg: [3]float64{rand.Float64() * 2, rand.Float64() * 2, rand.Float64() * 2},
-			procs:   rand.Intn(200) + 40,
-		}
-		if s.status == "down" {
-			s.cpu, s.mem = 0, 0
-		}
-		for i := 0; i < 40; i++ {
-			s.cpuHist = append(s.cpuHist, s.cpu)
-			s.memHist = append(s.memHist, s.mem)
-			s.netHist = append(s.netHist, s.netIn)
-		}
+		s := server{name: n.name, region: n.region, ip: n.ip, status: n.status}
+		seedPlaceholderMetrics(&s)
 		srv = append(srv, s)
 	}
 	return srv
+}
+
+// seedSSHServer turns a discovered SSH config alias into a server entry.
+// Its identity (name/IP/region) is real; its metrics are simulated
+// placeholders until live polling lands.
+func seedSSHServer(h sshHost) server {
+	region := "ssh"
+	if h.User != "" {
+		region = h.User + "@" + h.HostName
+	} else {
+		region = h.HostName
+	}
+	if h.Port != "" && h.Port != "22" {
+		region += ":" + h.Port
+	}
+	s := server{name: h.Alias, region: region, ip: h.HostName, status: "up"}
+	seedPlaceholderMetrics(&s)
+	return s
+}
+
+// seedPlaceholderMetrics fills in plausible, slightly-randomized starting
+// metrics and a flat history so the gauges and charts have something to draw
+// before the first tick. Down hosts are zeroed out. Swap this out (and
+// updateMetrics's per-tick walk) for a real inventory/exporter source to
+// point serverlume at live infrastructure.
+func seedPlaceholderMetrics(s *server) {
+	s.cpu = rand.Float64()*60 + 10
+	s.mem = rand.Float64()*50 + 20
+	s.disk = rand.Float64()*40 + 30
+	s.netIn = rand.Float64() * 80
+	s.netOut = rand.Float64() * 40
+	s.uptime = time.Duration(rand.Intn(90)) * 24 * time.Hour
+	s.loadAvg = [3]float64{rand.Float64() * 2, rand.Float64() * 2, rand.Float64() * 2}
+	s.procs = rand.Intn(200) + 40
+	if s.status == "down" {
+		s.cpu, s.mem = 0, 0
+	}
+	for i := 0; i < 40; i++ {
+		s.cpuHist = append(s.cpuHist, s.cpu)
+		s.memHist = append(s.memHist, s.mem)
+		s.diskHist = append(s.diskHist, s.disk)
+		s.netHist = append(s.netHist, s.netIn)
+	}
 }
 
 func walk(v float64, spread float64, lo, hi float64) float64 {
@@ -121,40 +183,70 @@ type tab int
 
 const (
 	tabOverview tab = iota
-	tabMetrics
 	tabLogs
-	tabCharts
 )
 
-var tabNames = []string{"Overview", "Metrics", "Logs", "Charts"}
+var tabNames = []string{"Overview", "Logs"}
 
 type tickMsg time.Time
+type bootTickMsg time.Time
+
+// bootFrames controls how long the startup splash animates before the
+// dashboard takes over.
+const bootFrames = 14
+
+var spinnerFrames = []string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"}
 
 type model struct {
-	servers  []server
-	cursor   int
-	tab      tab
-	logs     []logLine
-	width    int
-	height   int
-	paused   bool
-	quitting bool
+	servers     []server
+	fleetSource string // where servers came from, shown in the sidebar (e.g. "~/.ssh/config", "demo data")
+	host        server // this machine — kept separate from servers, never mixed into fleet-wide views
+	cursor      int
+	tab         tab
+	logs        []logLine
+	width       int
+	height      int
+	paused      bool
+	quitting    bool
+	booting     bool
+	bootFrame   int
+	pulseOn     bool
 }
 
 func initialModel() model {
+	servers, source := newServers()
 	return model{
-		servers: newServers(),
-		tab:     tabOverview,
+		servers:     servers,
+		fleetSource: source,
+		host:        newHostEntry(),
+		tab:         tabOverview,
+		booting:     true,
 	}
 }
 
+// selected returns the server or host entry the cursor currently points at.
+// The cursor range is 0..len(servers) inclusive: the extra slot past the
+// fleet list is the host entry.
+func (m model) selected() server {
+	if m.cursor >= len(m.servers) {
+		return m.host
+	}
+	return m.servers[m.cursor]
+}
+
 func (m model) Init() tea.Cmd {
-	return tickCmd()
+	return tea.Batch(tickCmd(), bootTickCmd(), tea.SetWindowTitle("serverlume"))
 }
 
 func tickCmd() tea.Cmd {
 	return tea.Tick(600*time.Millisecond, func(t time.Time) tea.Msg {
 		return tickMsg(t)
+	})
+}
+
+func bootTickCmd() tea.Cmd {
+	return tea.Tick(70*time.Millisecond, func(t time.Time) tea.Msg {
+		return bootTickMsg(t)
 	})
 }
 
@@ -166,8 +258,16 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case tea.KeyMsg:
+		if msg.String() == "ctrl+c" {
+			m.quitting = true
+			return m, tea.Quit
+		}
+		if m.booting {
+			m.booting = false
+			return m, nil
+		}
 		switch msg.String() {
-		case "ctrl+c", "q":
+		case "q":
 			m.quitting = true
 			return m, tea.Quit
 		case "up", "k":
@@ -175,7 +275,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.cursor--
 			}
 		case "down", "j":
-			if m.cursor < len(m.servers)-1 {
+			if m.cursor < len(m.servers) {
 				m.cursor++
 			}
 		case "tab":
@@ -185,22 +285,30 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "1":
 			m.tab = tabOverview
 		case "2":
-			m.tab = tabMetrics
-		case "3":
 			m.tab = tabLogs
-		case "4":
-			m.tab = tabCharts
 		case "p":
 			m.paused = !m.paused
 		}
 		return m, nil
 
 	case tickMsg:
+		m.pulseOn = !m.pulseOn
 		if !m.paused {
 			m.updateMetrics()
 			m.maybeLog()
 		}
 		return m, tickCmd()
+
+	case bootTickMsg:
+		if !m.booting {
+			return m, nil
+		}
+		m.bootFrame++
+		if m.bootFrame >= bootFrames {
+			m.booting = false
+			return m, nil
+		}
+		return m, bootTickCmd()
 	}
 	return m, nil
 }
@@ -213,13 +321,21 @@ func (m *model) updateMetrics() {
 		}
 		s.cpu = walk(s.cpu, 6, 2, 98)
 		s.mem = walk(s.mem, 3, 5, 95)
+		s.disk = walk(s.disk, 1, 5, 97) // disk fills slowly compared to cpu/mem
 		s.netIn = walk(s.netIn, 8, 0, 400)
 		s.netOut = walk(s.netOut, 5, 0, 200)
 		s.cpuHist = append(s.cpuHist[1:], s.cpu)
 		s.memHist = append(s.memHist[1:], s.mem)
+		s.diskHist = append(s.diskHist[1:], s.disk)
 		s.netHist = append(s.netHist[1:], s.netIn)
 		s.uptime += 600 * time.Millisecond
 	}
+
+	m.host.refreshHost()
+	m.host.cpuHist = append(m.host.cpuHist[1:], m.host.cpu)
+	m.host.memHist = append(m.host.memHist[1:], m.host.mem)
+	m.host.diskHist = append(m.host.diskHist[1:], m.host.disk)
+	m.host.netHist = append(m.host.netHist[1:], m.host.netIn)
 }
 
 func (m *model) maybeLog() {
@@ -227,16 +343,22 @@ func (m *model) maybeLog() {
 		return
 	}
 	srv := m.servers[rand.Intn(len(m.servers))]
-	lvl := logLevels[rand.Intn(len(logLevels))]
-	msgTmpl := logMsgs[rand.Intn(len(logMsgs))]
-	msg := msgTmpl
-	if strings.Contains(msgTmpl, "%d") {
-		msg = fmt.Sprintf(msgTmpl, rand.Intn(999))
+	tmpl := logTemplates[rand.Intn(len(logTemplates))]
+	tag := tmpl.levels[rand.Intn(len(tmpl.levels))]
+
+	msg := tmpl.tmpl
+	if strings.Contains(tmpl.tmpl, "%d") {
+		arg := tmpl.argLo
+		if tmpl.argHi > tmpl.argLo {
+			arg += rand.Intn(tmpl.argHi - tmpl.argLo + 1)
+		}
+		msg = fmt.Sprintf(tmpl.tmpl, arg)
 	}
+
 	line := logLine{
 		t:   time.Now(),
-		tag: lvl.tag,
-		col: lvl.col,
+		tag: tag,
+		col: logLevelColor(tag),
 		msg: fmt.Sprintf("[%s] %s", srv.name, msg),
 	}
 	m.logs = append(m.logs, line)
