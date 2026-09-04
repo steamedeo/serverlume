@@ -18,10 +18,11 @@ import (
 // sshHost is one concrete (non-wildcard) Host alias discovered in an SSH
 // client config file.
 type sshHost struct {
-	Alias    string
-	HostName string
-	User     string
-	Port     string
+	Alias        string
+	HostName     string
+	User         string
+	Port         string
+	IdentityFile []string
 }
 
 // defaultSSHConfigPath returns the conventional per-user OpenSSH client
@@ -75,8 +76,12 @@ func loadSSHHosts(path string) ([]sshHost, error) {
 			}
 			user, _ := cfg.Get(alias, "User")
 			port, _ := cfg.Get(alias, "Port")
+			identityFiles, _ := cfg.GetAll(alias, "IdentityFile")
 
-			hosts = append(hosts, sshHost{Alias: alias, HostName: hostName, User: user, Port: port})
+			hosts = append(hosts, sshHost{
+				Alias: alias, HostName: hostName, User: user, Port: port,
+				IdentityFile: identityFiles,
+			})
 		}
 	}
 	return hosts, nil

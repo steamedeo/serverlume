@@ -28,7 +28,9 @@ func (m model) View() string {
 	header := m.renderHeader()
 	footer := m.renderFooter()
 
-	bodyHeight := m.height - lipgloss.Height(header) - lipgloss.Height(footer) - 1
+	// full below joins header + "" + body + "" + footer — that's two blank
+	// separator lines on top of header/footer's own height, not one.
+	bodyHeight := m.height - lipgloss.Height(header) - lipgloss.Height(footer) - 2
 	if bodyHeight < 5 {
 		bodyHeight = 5
 	}
@@ -46,7 +48,31 @@ func (m model) View() string {
 	body := lipgloss.JoinHorizontal(lipgloss.Top, sidebar, strings.Repeat(" ", gap), main)
 
 	full := lipgloss.JoinVertical(lipgloss.Left, header, "", body, "", footer)
-	return page.Width(m.width).Height(m.height).Render(full)
+	// clipLines runs on the final rendered string, after page's own
+	// Width/Height — that outer Render can itself wrap a too-wide line
+	// (e.g. on a very narrow terminal) into extra output lines, so this has
+	// to be the true last step to actually guarantee the line-count cap.
+	return clipLines(page.Width(m.width).Height(m.height).Render(full), m.height)
+}
+
+// clipLines is a last-resort safety net: lipgloss's Height() only pads
+// content that's shorter than requested, it never truncates content that's
+// taller. If some section's budgeting is off and the page ends up with more
+// lines than the terminal is tall, printing all of it makes the terminal
+// itself scroll — which, since the app draws top-to-bottom, shows up as the
+// *top* of the UI (the header, the first sidebar rows) scrolling out of
+// view instead of a clean bottom cutoff. Hard-capping the line count here
+// guarantees that can't happen, regardless of what any individual renderer
+// gets wrong.
+func clipLines(s string, height int) string {
+	if height <= 0 {
+		return s
+	}
+	lines := strings.Split(s, "\n")
+	if len(lines) <= height {
+		return s
+	}
+	return strings.Join(lines[:height], "\n")
 }
 
 // renderSplash draws the animated boot screen shown for the first
@@ -133,7 +159,7 @@ func (m model) renderFooter() string {
 	keys := []struct{ k, d string }{
 		{"↑/↓", "select"},
 		{"tab", "switch view"},
-		{"1-4", "jump tab"},
+		{"1-3", "jump tab"},
 		{"p", "pause"},
 		{"q", "quit"},
 	}
@@ -155,14 +181,14 @@ func (m model) renderFooter() string {
 }
 
 func (m model) renderSidebar(width, height int) string {
+	innerW := width - 4 // minus card border+padding
+
 	var rows []string
 	header := lipgloss.NewStyle().Bold(true).Foreground(colPink).Render("SERVERS") +
 		subtleStyle.Render(fmt.Sprintf("  %d nodes", len(m.servers)))
 	rows = append(rows, header)
 	rows = append(rows, subtleStyle.Render("· "+m.fleetSource))
-	rows = append(rows, lipgloss.NewStyle().Foreground(colBorder).Render(strings.Repeat("─", width-2)))
-
-	innerW := width - 4 // minus card border+padding
+	rows = append(rows, lipgloss.NewStyle().Foreground(colBorder).Render(strings.Repeat("─", innerW)))
 
 	renderRow := func(s server, selected, isHostRow bool) string {
 		bar := "▏"
@@ -184,24 +210,24 @@ func (m model) renderSidebar(width, height int) string {
 		if isHostRow {
 			nameStyle = nameStyle.Foreground(colLav)
 		}
-		cpuStyle := lipgloss.NewStyle().Foreground(colDim)
+		memStyle := lipgloss.NewStyle().Foreground(colDim)
 		if selected {
 			accent := colPink
 			if isHostRow {
 				accent = colLav
 			}
 			nameStyle = nameStyle.Foreground(accent).Bold(true)
-			cpuStyle = lipgloss.NewStyle().Foreground(colPinkSoft).Bold(true)
+			memStyle = lipgloss.NewStyle().Foreground(colPinkSoft).Bold(true)
 			if isHostRow {
-				cpuStyle = lipgloss.NewStyle().Foreground(accent).Bold(true)
+				memStyle = lipgloss.NewStyle().Foreground(accent).Bold(true)
 			}
 			barStyle = barStyle.Bold(true)
 		}
-		cpuTxt := "  --  "
+		memTxt := "  --  "
 		if s.status != "down" {
-			cpuTxt = fmt.Sprintf("%5.0f%%", s.cpu)
+			memTxt = fmt.Sprintf("%5.0f%%", s.mem)
 		}
-		line := fmt.Sprintf("%s %-*s%s", barStyle.Render(bar), nameW+1, nameStyle.Render(name), cpuStyle.Render(cpuTxt))
+		line := fmt.Sprintf("%s %-*s%s", barStyle.Render(bar), nameW+1, nameStyle.Render(name), memStyle.Render(memTxt))
 
 		rowStyle := lipgloss.NewStyle().Width(innerW)
 		if selected {
@@ -211,8 +237,25 @@ func (m model) renderSidebar(width, height int) string {
 		return rowStyle.Render(line)
 	}
 
-	for i, s := range m.servers {
-		rows = append(rows, renderRow(s, i == m.cursor, false))
+	// Everything else in the card is fixed overhead (header x3, the "this
+	// host" divider/caption/row x4) — whatever's left is what the fleet
+	// list actually has room for. On a short terminal that's fewer than
+	// len(m.servers), so the list needs to scroll rather than just render
+	// past the card's bottom (which lipgloss won't clip on its own, and —
+	// worse — can push the whole page taller than the terminal, scrolling
+	// real terminal content and hiding rows above instead of below).
+	const fixedOverheadRows = 7
+	avail := (height - 2) - fixedOverheadRows
+	start, end, above, below := scrollWindow(len(m.servers), m.cursor, avail)
+
+	if above > 0 {
+		rows = append(rows, subtleStyle.Render(fmt.Sprintf("  ↑ %d more", above)))
+	}
+	for i := start; i < end; i++ {
+		rows = append(rows, renderRow(m.servers[i], i == m.cursor, false))
+	}
+	if below > 0 {
+		rows = append(rows, subtleStyle.Render(fmt.Sprintf("  ↓ %d more", below)))
 	}
 
 	// The host entry is visually detached from the fleet: a dashed divider
@@ -222,8 +265,67 @@ func (m model) renderSidebar(width, height int) string {
 	rows = append(rows, lipgloss.NewStyle().Foreground(colLav).Bold(true).Render("⌂ THIS HOST"))
 	rows = append(rows, renderRow(m.host, m.cursor == len(m.servers), true))
 
-	content := padOpaque(strings.Join(rows, "\n"), innerW, colBgCard)
+	// Same safety net as renderMain: the fixed-overhead accounting above is
+	// meant to keep this exactly at height-2, but never let a rounding case
+	// push it taller than the card actually has room for.
+	content := clipLines(strings.Join(rows, "\n"), height-2)
+	content = padOpaque(content, innerW, colBgCard)
 	return cardStyleFocus.Width(width - 2).Height(height - 2).Render(content)
+}
+
+// scrollWindow picks a [start, end) slice of a total-item list that both
+// fits within avail rows and keeps cursor inside it, growing outward from
+// the cursor. above/below report how many items are scrolled past on each
+// side, for a "N more" indicator — each indicator line itself eats into the
+// budget, hence the two-pass sizing.
+func scrollWindow(total, cursor, avail int) (start, end, above, below int) {
+	if avail < 1 {
+		avail = 1
+	}
+	if total <= avail {
+		return 0, total, 0, 0
+	}
+	if cursor < 0 || cursor >= total {
+		cursor = 0
+	}
+
+	fit := func(winSize int) (int, int) {
+		if winSize < 1 {
+			winSize = 1
+		}
+		s := cursor - (winSize-1)/2
+		if s < 0 {
+			s = 0
+		}
+		e := s + winSize
+		if e > total {
+			e = total
+			s = e - winSize
+			if s < 0 {
+				s = 0
+			}
+		}
+		return s, e
+	}
+
+	start, end = fit(avail)
+	reserve := 0
+	if start > 0 {
+		reserve++
+	}
+	if end < total {
+		reserve++
+	}
+	if reserve > 0 {
+		start, end = fit(avail - reserve)
+	}
+	if start > 0 {
+		above = start
+	}
+	if end < total {
+		below = total - end
+	}
+	return start, end, above, below
 }
 
 func (m model) renderMain(width, height int) string {
@@ -253,9 +355,17 @@ func (m model) renderMain(width, height int) string {
 	switch m.tab {
 	case tabOverview:
 		content = m.renderOverview(s, innerW, innerHeight)
+	case tabCommand:
+		content = m.renderCommand(s, innerW, innerHeight)
 	case tabLogs:
 		content = m.renderLogs(innerW, innerHeight)
 	}
+
+	// Safety net: a tab's own content budgeting can still be wrong (fixed
+	// rows a tab always emits, e.g. Overview's name/region/gauges block,
+	// don't shrink with height) — clip rather than let it push the card,
+	// and with it the whole page, taller than requested.
+	content = clipLines(content, innerHeight)
 
 	body := lipgloss.JoinVertical(lipgloss.Left,
 		padOpaque(tabBar, innerW, colBgCard),
@@ -308,12 +418,30 @@ func (m model) renderOverview(s server, width, height int) string {
 	if chartW < 12 {
 		chartW = 12
 	}
-	chartH := 4
-	if height < 30 {
-		chartH = 3
+
+	// overviewFixedLines is everything above the charts: name+badges (2,
+	// counting the blank line "\n\n" leaves), 4 kv rows, load avg+blank (2),
+	// 3 gauges+blank (4), 2 net rows+blank (3) — see the writes above.
+	const overviewFixedLines = 2 + 4 + 2 + 4 + 3
+	chartsAvail := height - overviewFixedLines
+	if chartsAvail < 0 {
+		chartsAvail = 0
 	}
-	if height < 22 {
-		chartH = 2
+
+	// Each chart section costs (chartH + 2) lines: a label line, the chart
+	// itself, and a trailing blank. Rather than just shrinking chartH until
+	// it's an unreadable sliver (a fixed 2-line-per-chart cost means that
+	// alone was never enough to actually fit on a short terminal), find the
+	// largest chart height — and, failing that, the fewest charts — that
+	// actually fits the space that's really there. Below a hard floor of 2
+	// rows a chart isn't legible anyway, so charts get dropped instead.
+	numCharts, chartH := 3, 4
+	for numCharts > 0 && numCharts*(chartH+2) > chartsAvail {
+		if chartH > 2 {
+			chartH--
+		} else {
+			numCharts--
+		}
 	}
 
 	section := func(label string, val float64, hist []float64, unit string, col asciigraph.AnsiColor) {
@@ -325,9 +453,19 @@ func (m model) renderOverview(s server, width, height int) string {
 		b.WriteString("\n\n")
 	}
 
-	section("CPU history", s.cpu, s.cpuHist, "%", ansiCPU)
-	section("Memory history", s.mem, s.memHist, "%", ansiMem)
-	section("Disk history", s.disk, s.diskHist, "%", ansiDisk)
+	charts := []struct {
+		label string
+		val   float64
+		hist  []float64
+		col   asciigraph.AnsiColor
+	}{
+		{"CPU history", s.cpu, s.cpuHist, ansiCPU},
+		{"Memory history", s.mem, s.memHist, ansiMem},
+		{"Disk history", s.disk, s.diskHist, ansiDisk},
+	}
+	for _, c := range charts[:numCharts] {
+		section(c.label, c.val, c.hist, "%", c.col)
+	}
 
 	return b.String()
 }
@@ -399,6 +537,65 @@ func lineChart(hist []float64, width, height int, lo, hi float64, col asciigraph
 }
 
 // ---------- Logs tab ----------
+
+// ---------- Command tab ----------
+
+// renderCommand shows a per-host scrollback of commands run over SSH (most
+// recent at the bottom) with an input prompt for the currently selected
+// host below it. Each host keeps its own input/history (m.cmdInputs /
+// m.cmdHistory, keyed by alias), so switching servers doesn't lose either.
+func (m model) renderCommand(s server, width, height int) string {
+	if !s.isSSH {
+		return subtleStyle.Render("Command execution is only available for SSH-connected hosts.")
+	}
+
+	const reservedForPrompt = 2 // blank separator + the prompt line itself
+	histBudget := height - reservedForPrompt
+	if histBudget < 0 {
+		histBudget = 0
+	}
+
+	var histLines []string
+	for _, e := range m.cmdHistory[s.name] {
+		histLines = append(histLines, lipgloss.NewStyle().Foreground(colLav).Bold(true).Render("$ "+e.cmd))
+
+		out := strings.TrimRight(e.stdout, "\n")
+		if out != "" {
+			for _, l := range strings.Split(out, "\n") {
+				histLines = append(histLines, lipgloss.NewStyle().Foreground(colText).Render(l))
+			}
+		}
+
+		errText := strings.TrimRight(e.stderr, "\n")
+		if errText == "" && e.err != nil {
+			errText = e.err.Error()
+		}
+		if errText != "" {
+			errStyle := lipgloss.NewStyle().Foreground(colRed)
+			for _, l := range strings.Split(errText, "\n") {
+				histLines = append(histLines, errStyle.Render(l))
+			}
+		}
+
+		if out == "" && errText == "" {
+			histLines = append(histLines, subtleStyle.Render("(no output)"))
+		}
+		histLines = append(histLines, "")
+	}
+	if len(histLines) == 0 {
+		histLines = append(histLines, subtleStyle.Render("Type a command and press enter to run it on "+s.name+"."))
+	}
+	if len(histLines) > histBudget {
+		histLines = histLines[len(histLines)-histBudget:]
+	}
+
+	prompt := lipgloss.NewStyle().Foreground(colPink).Bold(true).Render("$ ") + m.cmdInputs[s.name] + "▏"
+	if m.cmdRunning[s.name] {
+		prompt = lipgloss.NewStyle().Foreground(colAmber).Render("running…")
+	}
+
+	return strings.Join(append(histLines, "", prompt), "\n")
+}
 
 func (m model) renderLogs(width, height int) string {
 	var lines []string

@@ -1,6 +1,7 @@
-// Command serverlume is a k9s-style terminal dashboard for monitoring a fleet
-// of servers: live CPU/memory/network metrics, log tailing, and a small
-// gallery of terminal-native charts, built with Bubble Tea and Lip Gloss.
+// Command serverlume is a k9s-style terminal dashboard for monitoring a
+// fleet of servers discovered from ~/.ssh/config: live CPU/memory/disk/
+// network metrics and history charts, a real-time SSH connection/error
+// log, and a per-host command runner, built with Bubble Tea and Lip Gloss.
 package main
 
 import (
@@ -18,4 +19,4 @@ func main() {
 	}
 }
 
-const appVersion = "v0.1.0"
+const appVersion = "v0.2.0"
