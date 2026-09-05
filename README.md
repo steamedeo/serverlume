@@ -13,6 +13,8 @@ it already has.
 [![Release](https://img.shields.io/github/v/tag/steamedeo/serverlume?label=release&sort=semver)](https://github.com/steamedeo/serverlume/tags)
 [![License: MIT](https://img.shields.io/github/license/steamedeo/serverlume)](./LICENSE)
 
+![serverlume overview tab, showing a fleet sidebar and live CPU/memory/disk gauges and history charts](./docs/screenshot.png)
+
 > serverlume started as an exploration of how far a terminal UI can go
 > toward looking like a modern web dashboard, all in true-color ANSI, and
 > grew into an actually-useful agentless fleet monitor. See
@@ -42,7 +44,7 @@ have — just visualized.
 - **This host** — your own machine gets a divider-separated entry with real
   local metrics (via [gopsutil](https://github.com/shirou/gopsutil)), kept
   visually and functionally apart from the fleet you're SSHing into.
-- **Overview tab** — region, IP, uptime, load average, gradient gauges for
+- **Overview tab** — user, IP, OS, uptime, load average, gradient gauges for
   CPU/memory/disk, network throughput, and auto-scaled history line charts
   so a metric that only wobbles a couple of points still reads as motion,
   not a flat line.
